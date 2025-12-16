@@ -30,7 +30,7 @@ export function TransformToDecimal() {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       return new Decimal(value);
     } catch (_) {
-      return null;
+      return undefined;
     }
   });
 }

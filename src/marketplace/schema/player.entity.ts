@@ -31,7 +31,8 @@ export class Player {
   })
   team: Team;
 
-  // TODO: teamID
+  @Column({ nullable: true })
+  teamId: number;
 
   @Column({ default: false })
   isListed: boolean;

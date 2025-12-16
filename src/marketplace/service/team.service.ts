@@ -14,7 +14,7 @@ export class TeamService {
   ) {}
 
   async getUserTeam(userId: number): Promise<Team | null> {
-    return this.teamRepository.findOneBy({ owner: { id: userId } });
+    return this.teamRepository.findOneBy({ ownerId: userId });
   }
 
   async createTeam(

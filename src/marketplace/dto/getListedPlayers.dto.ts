@@ -1,15 +1,19 @@
 import { IsOptional } from "class-validator";
 import { Player, Position } from "../schema/player.entity";
+import { TransformToDecimal } from "./listPlayer.dto";
+import { Decimal } from "decimal.js";
 
 export class GetListedPlayersDto {
   @IsOptional()
   playerName?: string;
 
   @IsOptional()
-  minPrice?: number;
+  @TransformToDecimal()
+  minPrice?: Decimal;
 
   @IsOptional()
-  maxPrice?: number;
+  @TransformToDecimal()
+  maxPrice?: Decimal;
 
   @IsOptional()
   teamName?: string;

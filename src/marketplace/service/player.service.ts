@@ -1,14 +1,20 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, DataSource } from "typeorm";
+import { Repository, DataSource, FindOptionsWhere, ILike } from "typeorm";
 import { Player } from "../schema/player.entity";
 import { Team } from "../schema/team.entity";
 import { GetListedPlayersDto } from "../dto/getListedPlayers.dto";
 import { ListPlayerDto } from "../dto/listPlayer.dto";
 import { SafeUserObject } from "src/auth/service/auth.service";
+import { Decimal } from "decimal.js";
+import { BuyPlayerDto } from "../dto/buyPlayer.dto";
 
 @Injectable()
 export class PlayerService {
+  private readonly MAX_PLAYERS_PER_TEAM = 25;
+  private readonly MIN_PLAYERS_PER_TEAM = 15;
+  private readonly TRANSFER_MARKET_PRICE_MULTIPLIER = new Decimal(0.95);
+
   constructor(
     @InjectRepository(Player)
     private readonly playerRepository: Repository<Player>,
@@ -18,32 +24,24 @@ export class PlayerService {
   ) {}
 
   async getListedPlayers(query: GetListedPlayersDto): Promise<Player[]> {
-    const qb = this.playerRepository.createQueryBuilder("player");
-
-    qb.leftJoinAndSelect("player.team", "team");
-    qb.where("player.isListed = :isListed", { isListed: true });
+    const conditions: FindOptionsWhere<Player> = { isListed: true };
 
     if (query.playerName) {
-      qb.andWhere("player.name ILIKE :playerName", {
-        playerName: `%${query.playerName}%`,
-      });
+      conditions.name = ILike(`%${query.playerName}%`);
     }
 
-    if (query.minPrice) {
-      qb.andWhere("player.price >= :minPrice", { minPrice: query.minPrice });
-    }
-
-    if (query.maxPrice) {
-      qb.andWhere("player.price <= :maxPrice", { maxPrice: query.maxPrice });
-    }
+    conditions.price = {
+      greaterThanOrEqualTo: query.minPrice,
+      lessThanOrEqualTo: query.maxPrice,
+    } as FindOptionsWhere<Decimal>;
 
     if (query.teamName) {
-      qb.andWhere("team.name ILIKE :teamName", {
-        teamName: `%${query.teamName}%`,
-      });
+      conditions.team = {
+        name: ILike(`%${query.teamName}%`),
+      };
     }
 
-    return qb.getMany();
+    return this.playerRepository.find({ where: conditions });
   }
 
   async listPlayer(
@@ -56,7 +54,7 @@ export class PlayerService {
     if (!player) {
       return null;
     }
-    if (player.team.owner.id !== user.id) {
+    if (player.team.ownerId !== user.id) {
       return null;
     }
     player.isListed = true;
@@ -72,7 +70,7 @@ export class PlayerService {
     if (!player) {
       return null;
     }
-    if (player.team.owner.id !== user.id) {
+    if (player.team.ownerId !== user.id) {
       return null;
     }
     player.isListed = false;
@@ -84,22 +82,12 @@ export class PlayerService {
     return this.playerRepository.findOneBy({ id });
   }
 
-  async buyPlayer(user: SafeUserObject, id: number): Promise<Player | null> {
-    const player = await this.playerRepository.findOne({
-      where: { id },
-      relations: ["team", "team.owner"],
-    });
-
-    if (!player || !player.isListed) {
-      return null;
-    }
-
-    if (player.team.owner.id === user.id) {
-      return null;
-    }
-
-    const buyingTeam = await this.teamRepository.findOne({
-      where: { owner: { id: user.id } },
+  async buyPlayer(
+    user: SafeUserObject,
+    offer: BuyPlayerDto
+  ): Promise<Player | null> {
+    const buyingTeam = await this.teamRepository.findOneBy({
+      ownerId: user.id,
     });
 
     if (!buyingTeam) {
@@ -111,29 +99,31 @@ export class PlayerService {
     await queryRunner.startTransaction();
 
     try {
-      const teamIds = [buyingTeam.id, player.team.id].sort((a, b) => a - b);
-
-      const lockedPlayer = await queryRunner.manager.findOne(Player, {
-        where: { id: player.id },
-        lock: { mode: "pessimistic_write" },
-        relations: ["team"],
+      const player = await queryRunner.manager.findOne(Player, {
+        where: { id: offer.id },
+        lock: { mode: "for_no_key_update" },
       });
 
-      if (!lockedPlayer || !lockedPlayer.isListed) {
+      if (
+        !player ||
+        !player.isListed ||
+        !player.price ||
+        player.team.ownerId === user.id
+      ) {
         await queryRunner.rollbackTransaction();
         return null;
       }
 
+      const teamIds = [buyingTeam.id, player.team.id].sort((a, b) => a - b); // To prevent deadlocks
+
       const team1 = await queryRunner.manager.findOne(Team, {
         where: { id: teamIds[0] },
-        lock: { mode: "pessimistic_write" },
-        relations: ["players"],
+        lock: { mode: "for_no_key_update" },
       });
 
       const team2 = await queryRunner.manager.findOne(Team, {
         where: { id: teamIds[1] },
-        lock: { mode: "pessimistic_write" },
-        relations: ["players"],
+        lock: { mode: "for_no_key_update" },
       });
 
       if (!team1 || !team2) {
@@ -144,43 +134,30 @@ export class PlayerService {
       const lockedBuyingTeam = team1.id === buyingTeam.id ? team1 : team2;
       const lockedListingTeam = team1.id === player.team.id ? team1 : team2;
 
-      if (lockedBuyingTeam.players.length >= 25) {
+      if (
+        lockedBuyingTeam.players.length >= this.MAX_PLAYERS_PER_TEAM ||
+        lockedListingTeam.players.length <= this.MIN_PLAYERS_PER_TEAM ||
+        lockedBuyingTeam.budget.lessThan(offer.price) ||
+        offer.price.lessThan(
+          player.price.mul(this.TRANSFER_MARKET_PRICE_MULTIPLIER)
+        )
+      ) {
         await queryRunner.rollbackTransaction();
         return null;
       }
+      lockedBuyingTeam.budget = lockedBuyingTeam.budget.minus(offer.price);
+      lockedListingTeam.budget = lockedListingTeam.budget.plus(offer.price);
 
-      if (lockedListingTeam.players.length <= 15) {
-        await queryRunner.rollbackTransaction();
-        return null;
-      }
-
-      if (!lockedPlayer.price) {
-        await queryRunner.rollbackTransaction();
-        return null;
-      }
-
-      if (lockedBuyingTeam.budget.lessThan(lockedPlayer.price)) {
-        await queryRunner.rollbackTransaction();
-        return null;
-      }
-
-      lockedBuyingTeam.budget = lockedBuyingTeam.budget.minus(
-        lockedPlayer.price
-      );
-      lockedListingTeam.budget = lockedListingTeam.budget.plus(
-        lockedPlayer.price
-      );
-
-      lockedPlayer.team = lockedBuyingTeam;
-      lockedPlayer.isListed = false;
-      lockedPlayer.price = null;
+      player.team = lockedBuyingTeam;
+      player.isListed = false;
+      player.price = null;
 
       await queryRunner.manager.save(lockedBuyingTeam);
       await queryRunner.manager.save(lockedListingTeam);
-      await queryRunner.manager.save(lockedPlayer);
+      await queryRunner.manager.save(player);
 
       await queryRunner.commitTransaction();
-      return lockedPlayer;
+      return player;
     } catch (err) {
       await queryRunner.rollbackTransaction();
       throw err;

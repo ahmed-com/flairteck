@@ -33,7 +33,8 @@ export class Team {
   @JoinColumn()
   owner: User;
 
-  // TODO: ownerID
+  @Column({ nullable: true })
+  ownerId: number;
 
   @OneToMany(() => Player, (player) => player.team, {
     eager: true,
