@@ -4,13 +4,9 @@ import { User } from "../schema/user.entity";
 import { Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
+import { UserCreatedJobData } from "types/types";
 
 type NewUserObject = Omit<User, "id">;
-type UserCreatedJobData = {
-  userId: number;
-  email: string;
-};
-
 @Injectable()
 export class UserService {
   constructor(

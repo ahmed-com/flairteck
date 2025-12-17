@@ -6,12 +6,12 @@ import { TeamController } from "./controller/team.controller";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { Team } from "./schema/team.entity";
 import { Player } from "./schema/player.entity";
-import { BullModule } from "@nestjs/bullmq";
 import { MarketController } from "./controller/market.controller";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Team, Player]), BullModule],
+  imports: [TypeOrmModule.forFeature([Team, Player])],
   providers: [TeamService, PlayerService],
   controllers: [PlayerController, TeamController, MarketController],
+  exports: [TeamService],
 })
 export class MarketplaceModule {}
