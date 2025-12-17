@@ -49,3 +49,14 @@ docker compose build api && docker compose up -d
 # View logs
 docker logs flairtech-api -f
 ```
+## ⏱️ Time Report
+
+| Section | Time Spent | Details |
+| :--- | :--- | :--- |
+| **Project Setup & Docker** | 1.5 hrs | Initial NestJS setup, Docker Compose configuration (Postgres, Redis), and Environment configuration. |
+| **Authentication Module** | 2.5 hrs | Implementing the "Single Flow" (Login/Register) logic, JWT strategies, and Guards. |
+| **Team Generation (Async)** | 3.0 hrs | Setting up BullMQ for background processing, implementing logic to generate random players (GK, Def, Mid, Att) with initial values. |
+| **Marketplace & Transactions**| 5.0 hrs | Core business logic for transfers. Includes handling concurrency (pessimistic locking), validations (95% rule, team size limits), and financial calculations using `decimal.js`. |
+| **Refactoring & QA** | 2.0 hrs | Code cleanup, adding DTO validation pipes, and verifying end-to-end flows. |
+| **Documentation** | 0.5 hrs | Writing README and usage instructions. |
+| **Total** | **~14.5 hrs** | |
