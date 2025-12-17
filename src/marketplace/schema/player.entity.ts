@@ -26,7 +26,6 @@ export class Player {
   position: Position;
 
   @ManyToOne(() => Team, (team) => team.players, {
-    eager: true,
     nullable: false,
   })
   team: Team;

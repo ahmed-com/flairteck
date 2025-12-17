@@ -29,8 +29,8 @@ import { MarketplaceModule } from "./marketplace/marketplace.module";
         database: configService.get<string>("DB_NAME"),
         migrations: [__dirname + "/**/*.migration{.ts,.js}"],
         autoLoadEntities: true,
-        synchronize: ["prod", "test"].includes(
-          configService.get<string>("STAGE")!
+        synchronize: !["prod", "test"].includes(
+          configService.get<string>("STAGE") || ""
         ),
         migrationsRun: true,
         migrationsTableName: "schema_migrations",

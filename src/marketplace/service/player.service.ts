@@ -1,6 +1,14 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, DataSource, FindOptionsWhere, ILike } from "typeorm";
+import {
+  Repository,
+  DataSource,
+  FindOptionsWhere,
+  ILike,
+  MoreThanOrEqual,
+  LessThanOrEqual,
+  Between,
+} from "typeorm";
 import { Player } from "../schema/player.entity";
 import { Team } from "../schema/team.entity";
 import { GetListedPlayersDto } from "../dto/getListedPlayers.dto";
@@ -30,10 +38,17 @@ export class PlayerService {
       conditions.name = ILike(`%${query.playerName}%`);
     }
 
-    conditions.price = {
-      greaterThanOrEqualTo: query.minPrice,
-      lessThanOrEqualTo: query.maxPrice,
-    } as FindOptionsWhere<Decimal>;
+    // Build price conditions using TypeORM operators
+    if (query.minPrice && query.maxPrice) {
+      conditions.price = Between(
+        query.minPrice.toString(),
+        query.maxPrice.toString()
+      );
+    } else if (query.minPrice) {
+      conditions.price = MoreThanOrEqual(query.minPrice.toString());
+    } else if (query.maxPrice) {
+      conditions.price = LessThanOrEqual(query.maxPrice.toString());
+    }
 
     if (query.teamName) {
       conditions.team = {
@@ -41,15 +56,19 @@ export class PlayerService {
       };
     }
 
-    return this.playerRepository.find({ where: conditions });
+    return this.playerRepository.find({
+      where: conditions,
+      relations: ["team"],
+    });
   }
 
   async listPlayer(
     user: SafeUserObject,
     listPlayerDto: ListPlayerDto
   ): Promise<Player | null> {
-    const player = await this.playerRepository.findOneBy({
-      id: listPlayerDto.id,
+    const player = await this.playerRepository.findOne({
+      where: { id: listPlayerDto.id },
+      relations: ["team"],
     });
     if (!player) {
       return null;
@@ -66,7 +85,10 @@ export class PlayerService {
     user: SafeUserObject,
     playerId: number
   ): Promise<Player | null> {
-    const player = await this.playerRepository.findOneBy({ id: playerId });
+    const player = await this.playerRepository.findOne({
+      where: { id: playerId },
+      relations: ["team"],
+    });
     if (!player) {
       return null;
     }
@@ -99,44 +121,71 @@ export class PlayerService {
     await queryRunner.startTransaction();
 
     try {
-      const player = await queryRunner.manager.findOne(Player, {
+      // First, get player with team relation (no lock) to check ownership
+      const playerWithTeam = await queryRunner.manager.findOne(Player, {
         where: { id: offer.id },
-        lock: { mode: "for_no_key_update" },
+        relations: ["team"],
       });
 
       if (
-        !player ||
-        !player.isListed ||
-        !player.price ||
-        player.team.ownerId === user.id
+        !playerWithTeam ||
+        !playerWithTeam.isListed ||
+        !playerWithTeam.price ||
+        playerWithTeam.team.ownerId === user.id
       ) {
         await queryRunner.rollbackTransaction();
         return null;
       }
 
-      const teamIds = [buyingTeam.id, player.team.id].sort((a, b) => a - b); // To prevent deadlocks
+      const teamIds = [buyingTeam.id, playerWithTeam.team.id].sort(
+        (a, b) => a - b
+      ); // To prevent deadlocks
 
       const team1 = await queryRunner.manager.findOne(Team, {
         where: { id: teamIds[0] },
-        lock: { mode: "for_no_key_update" },
+        lock: { mode: "pessimistic_write" },
+        loadEagerRelations: false,
       });
 
       const team2 = await queryRunner.manager.findOne(Team, {
         where: { id: teamIds[1] },
-        lock: { mode: "for_no_key_update" },
+        lock: { mode: "pessimistic_write" },
+        loadEagerRelations: false,
       });
 
-      if (!team1 || !team2) {
+      // Lock the player for update
+      const player = await queryRunner.manager.findOne(Player, {
+        where: { id: offer.id },
+        lock: { mode: "pessimistic_write" },
+        loadEagerRelations: false,
+      });
+
+      if (!team1 || !team2 || !player) {
+        await queryRunner.rollbackTransaction();
+        return null;
+      }
+
+      // Re-check conditions after locking (in case of concurrent updates)
+      if (!player.isListed || !player.price) {
         await queryRunner.rollbackTransaction();
         return null;
       }
 
       const lockedBuyingTeam = team1.id === buyingTeam.id ? team1 : team2;
-      const lockedListingTeam = team1.id === player.team.id ? team1 : team2;
+      const lockedListingTeam =
+        team1.id === playerWithTeam.team.id ? team1 : team2;
+
+      // Count players for each team
+      const buyingTeamPlayerCount = await queryRunner.manager.count(Player, {
+        where: { teamId: lockedBuyingTeam.id },
+      });
+      const listingTeamPlayerCount = await queryRunner.manager.count(Player, {
+        where: { teamId: lockedListingTeam.id },
+      });
 
       if (
-        lockedBuyingTeam.players.length >= this.MAX_PLAYERS_PER_TEAM ||
-        lockedListingTeam.players.length <= this.MIN_PLAYERS_PER_TEAM ||
+        buyingTeamPlayerCount >= this.MAX_PLAYERS_PER_TEAM ||
+        listingTeamPlayerCount <= this.MIN_PLAYERS_PER_TEAM ||
         lockedBuyingTeam.budget.lessThan(offer.price) ||
         offer.price.lessThan(
           player.price.mul(this.TRANSFER_MARKET_PRICE_MULTIPLIER)
@@ -148,7 +197,7 @@ export class PlayerService {
       lockedBuyingTeam.budget = lockedBuyingTeam.budget.minus(offer.price);
       lockedListingTeam.budget = lockedListingTeam.budget.plus(offer.price);
 
-      player.team = lockedBuyingTeam;
+      player.teamId = lockedBuyingTeam.id;
       player.isListed = false;
       player.price = null;
 
@@ -157,6 +206,9 @@ export class PlayerService {
       await queryRunner.manager.save(player);
 
       await queryRunner.commitTransaction();
+
+      // Return player with team relation for response
+      player.team = lockedBuyingTeam;
       return player;
     } catch (err) {
       await queryRunner.rollbackTransaction();

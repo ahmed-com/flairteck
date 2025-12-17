@@ -4,6 +4,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { validationSchema } from "../config.schema";
 import { Team } from "src/marketplace/schema/team.entity";
 import { Player } from "src/marketplace/schema/player.entity";
+import { User } from "src/users/schema/user.entity";
 import { TeamProcessor } from "./team.service";
 import { MarketplaceModule } from "src/marketplace/marketplace.module";
 
@@ -26,7 +27,7 @@ import { MarketplaceModule } from "src/marketplace/marketplace.module";
         password: configService.get<string>("DB_PASSWORD"),
         database: configService.get<string>("DB_NAME"),
         autoLoadEntities: false,
-        entities: [Team, Player],
+        entities: [Team, Player, User],
         synchronize: false,
         migrationsRun: false,
         logging: true,
